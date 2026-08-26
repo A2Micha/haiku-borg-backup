@@ -1,0 +1,139 @@
+```sh
+#!/bin/sh
+
+export HOME="/boot/home"
+export PATH="/boot/system/bin:/boot/home/config/non-packaged/bin:/bin"
+export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes
+
+REPO="/data/borg-haiku"
+SOURCE="/boot/home"
+
+LOGDIR="/boot/home/config/non-packaged/var/log"
+LOGFILE="$LOGDIR/borg-backup.log"
+LOCKDIR="/tmp/haiku-borg-backup.lock"
+
+BORG="$(command -v borg)"
+
+mkdir -p "$LOGDIR"
+
+log()
+{
+    echo "$(date '+%Y-%m-%d %H:%M:%S')  $*" >> "$LOGFILE"
+}
+
+# Borg available?
+if [ -z "$BORG" ]; then
+    log "ERROR: borg not found."
+    exit 1
+fi
+
+# Backup repository available?
+if [ ! -d "$REPO" ]; then
+    log "Backup skipped: $REPO is not available."
+    exit 0
+fi
+
+# Prevent parallel backup jobs
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    log "Backup skipped: another backup is already running."
+    exit 0
+fi
+
+cleanup()
+{
+    rmdir "$LOCKDIR" 2>/dev/null
+}
+
+trap cleanup EXIT INT TERM
+
+log "------------------------------------------------------------"
+log "Backup started."
+
+# ------------------------------------------------------------
+# BACKUP
+# ------------------------------------------------------------
+
+"$BORG" create \
+    --compression lz4 \
+    --stats \
+    --exclude "/boot/home/config/cache" \
+    "$REPO::home-{now:%Y-%m-%d_%H-%M-%S}" \
+    "$SOURCE" >> "$LOGFILE" 2>&1
+
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ]; then
+    log "ERROR: borg create exited with status $STATUS."
+    exit "$STATUS"
+fi
+
+log "Backup successful."
+
+# ------------------------------------------------------------
+# PRUNE
+# ------------------------------------------------------------
+
+log "Prune started."
+
+"$BORG" prune \
+    --list \
+    "$REPO" \
+    --glob-archives 'home-*' \
+    --keep-hourly 24 \
+    --keep-daily 7 \
+    --keep-weekly 4 \
+    --keep-monthly 12 >> "$LOGFILE" 2>&1
+
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ]; then
+    log "ERROR: borg prune exited with status $STATUS."
+    exit "$STATUS"
+fi
+
+log "Prune completed."
+
+# ------------------------------------------------------------
+# COMPACT every 7 days
+# ------------------------------------------------------------
+
+STAMPFILE="$LOGDIR/last-compact"
+DO_COMPACT=0
+
+if [ ! -f "$STAMPFILE" ]; then
+    DO_COMPACT=1
+else
+    LAST_COMPACT="$(cat "$STAMPFILE" 2>/dev/null)"
+    NOW="$(date +%s)"
+
+    if [ -n "$LAST_COMPACT" ]; then
+        AGE=$((NOW - LAST_COMPACT))
+
+        if [ "$AGE" -ge 604800 ]; then
+            DO_COMPACT=1
+        fi
+    else
+        DO_COMPACT=1
+    fi
+fi
+
+if [ "$DO_COMPACT" -eq 1 ]; then
+    log "Compact started."
+
+    "$BORG" compact "$REPO" >> "$LOGFILE" 2>&1
+
+    STATUS=$?
+
+    if [ "$STATUS" -ne 0 ]; then
+        log "ERROR: borg compact exited with status $STATUS."
+        exit "$STATUS"
+    fi
+
+    date +%s > "$STAMPFILE"
+    log "Compact completed."
+fi
+
+log "Backup completed."
+
+exit 0
+```
