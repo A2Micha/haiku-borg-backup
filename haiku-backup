@@ -1,43 +1,100 @@
-```sh
 #!/bin/sh
+
+# ============================================================
+# Haiku Borg Backup
+# Borg 1.4.x
+#
+# Source:     /boot/home
+# Repository: /data/borg-haiku
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Environment
+# Important when running from cron
+# ------------------------------------------------------------
 
 export HOME="/boot/home"
 export PATH="/boot/system/bin:/boot/home/config/non-packaged/bin:/bin"
+
+export BORG_CONFIG_DIR="/boot/home/config/settings/borg"
+export BORG_CACHE_DIR="/boot/home/config/cache/borg"
+export BORG_SECURITY_DIR="/boot/home/config/settings/borg/security"
+
+# Repository was intentionally created with --encryption=none
 export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes
+
+
+# ------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------
 
 REPO="/data/borg-haiku"
 SOURCE="/boot/home"
 
 LOGDIR="/boot/home/config/non-packaged/var/log"
 LOGFILE="$LOGDIR/borg-backup.log"
+
 LOCKDIR="/tmp/haiku-borg-backup.lock"
+STAMPFILE="$LOGDIR/last-compact"
+
+
+# ------------------------------------------------------------
+# Prepare directories
+# ------------------------------------------------------------
+
+mkdir -p "$LOGDIR"
+mkdir -p "$BORG_CONFIG_DIR"
+mkdir -p "$BORG_CACHE_DIR"
+mkdir -p "$BORG_SECURITY_DIR"
+
+
+# ------------------------------------------------------------
+# Find Borg
+# ------------------------------------------------------------
 
 BORG="$(command -v borg)"
 
-mkdir -p "$LOGDIR"
+
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
 
 log()
 {
-    echo "$(date '+%Y-%m-%d %H:%M:%S')  $*" >> "$LOGFILE"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [PID $$] $*" >> "$LOGFILE"
 }
 
-# Borg available?
-if [ -z "$BORG" ]; then
-    log "ERROR: borg not found."
+
+# ------------------------------------------------------------
+# Check Borg
+# ------------------------------------------------------------
+
+if [ -z "$BORG" ] || [ ! -x "$BORG" ]; then
+    log "FEHLER: borg wurde nicht gefunden."
     exit 1
 fi
 
-# Backup repository available?
+
+# ------------------------------------------------------------
+# Check repository
+# ------------------------------------------------------------
+
 if [ ! -d "$REPO" ]; then
-    log "Backup skipped: $REPO is not available."
+    log "Backup übersprungen: $REPO ist nicht verfügbar."
     exit 0
 fi
 
+
+# ------------------------------------------------------------
 # Prevent parallel backup jobs
+# ------------------------------------------------------------
+
 if ! mkdir "$LOCKDIR" 2>/dev/null; then
-    log "Backup skipped: another backup is already running."
+    log "Backup übersprungen: Ein Backup läuft bereits."
     exit 0
 fi
+
 
 cleanup()
 {
@@ -46,12 +103,18 @@ cleanup()
 
 trap cleanup EXIT INT TERM
 
-log "------------------------------------------------------------"
-log "Backup started."
 
-# ------------------------------------------------------------
+log "------------------------------------------------------------"
+log "Backup gestartet."
+log "Lock erhalten: $LOCKDIR"
+log "Borg: $BORG"
+log "Quelle: $SOURCE"
+log "Repository: $REPO"
+
+
+# ============================================================
 # BACKUP
-# ------------------------------------------------------------
+# ============================================================
 
 "$BORG" create \
     --compression lz4 \
@@ -63,17 +126,27 @@ log "Backup started."
 STATUS=$?
 
 if [ "$STATUS" -ne 0 ]; then
-    log "ERROR: borg create exited with status $STATUS."
+    log "FEHLER: borg create Status $STATUS."
     exit "$STATUS"
 fi
 
-log "Backup successful."
+log "Backup erfolgreich."
 
-# ------------------------------------------------------------
+
+# ============================================================
 # PRUNE
-# ------------------------------------------------------------
+#
+# Keep:
+#   24 hourly
+#    7 daily
+#    4 weekly
+#   12 monthly
+#
+# Only home-* archives are touched.
+# The initial haiku-* full backup remains untouched.
+# ============================================================
 
-log "Prune started."
+log "Prune gestartet."
 
 "$BORG" prune \
     --list \
@@ -87,53 +160,76 @@ log "Prune started."
 STATUS=$?
 
 if [ "$STATUS" -ne 0 ]; then
-    log "ERROR: borg prune exited with status $STATUS."
+    log "FEHLER: borg prune Status $STATUS."
     exit "$STATUS"
 fi
 
-log "Prune completed."
+log "Prune abgeschlossen."
 
-# ------------------------------------------------------------
-# COMPACT every 7 days
-# ------------------------------------------------------------
 
-STAMPFILE="$LOGDIR/last-compact"
+# ============================================================
+# COMPACT
+#
+# Borg 1.4 needs compact to reclaim unused repository space.
+# Run at most once every 7 days.
+# ============================================================
+
 DO_COMPACT=0
 
 if [ ! -f "$STAMPFILE" ]; then
+
     DO_COMPACT=1
+
 else
+
     LAST_COMPACT="$(cat "$STAMPFILE" 2>/dev/null)"
     NOW="$(date +%s)"
 
     if [ -n "$LAST_COMPACT" ]; then
+
         AGE=$((NOW - LAST_COMPACT))
 
         if [ "$AGE" -ge 604800 ]; then
             DO_COMPACT=1
         fi
+
     else
+
         DO_COMPACT=1
+
     fi
+
 fi
 
+
 if [ "$DO_COMPACT" -eq 1 ]; then
-    log "Compact started."
+
+    log "Compact gestartet."
 
     "$BORG" compact "$REPO" >> "$LOGFILE" 2>&1
 
     STATUS=$?
 
     if [ "$STATUS" -ne 0 ]; then
-        log "ERROR: borg compact exited with status $STATUS."
+        log "FEHLER: borg compact Status $STATUS."
         exit "$STATUS"
     fi
 
     date +%s > "$STAMPFILE"
-    log "Compact completed."
+
+    log "Compact abgeschlossen."
+
+else
+
+    log "Compact nicht erforderlich."
+
 fi
 
-log "Backup completed."
+
+# ------------------------------------------------------------
+# Finished
+# ------------------------------------------------------------
+
+log "Backup vollständig abgeschlossen."
 
 exit 0
-```
