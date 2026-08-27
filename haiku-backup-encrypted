@@ -1,0 +1,244 @@
+#!/bin/sh
+
+# ============================================================
+# Haiku Borg Backup - Encrypted Repository
+# Tested with Borg 1.4.x
+#
+# Source:     /boot/home
+# Repository: /data/borg-haiku-encrypted
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Environment
+# Important when running from cron
+# ------------------------------------------------------------
+
+export HOME="/boot/home"
+export PATH="/boot/system/bin:/boot/home/config/non-packaged/bin:/bin"
+
+export BORG_CONFIG_DIR="/boot/home/config/settings/borg"
+export BORG_CACHE_DIR="/boot/home/config/cache/borg"
+export BORG_SECURITY_DIR="/boot/home/config/settings/borg/security"
+
+# Borg reads the passphrase from a separate protected file.
+export BORG_PASSCOMMAND="cat /boot/home/config/settings/borg/backup-passphrase"
+
+
+# ------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------
+
+REPO="/data/borg-haiku-encrypted"
+SOURCE="/boot/home"
+
+PASSPHRASE_FILE="/boot/home/config/settings/borg/backup-passphrase"
+
+LOGDIR="/boot/home/config/non-packaged/var/log"
+LOGFILE="$LOGDIR/borg-backup-encrypted.log"
+
+LOCKDIR="/tmp/haiku-borg-encrypted-backup.lock"
+STAMPFILE="$LOGDIR/last-compact-encrypted"
+
+
+# ------------------------------------------------------------
+# Prepare directories
+# ------------------------------------------------------------
+
+mkdir -p "$LOGDIR"
+mkdir -p "$BORG_CONFIG_DIR"
+mkdir -p "$BORG_CACHE_DIR"
+mkdir -p "$BORG_SECURITY_DIR"
+
+
+# ------------------------------------------------------------
+# Find Borg
+# ------------------------------------------------------------
+
+BORG="$(command -v borg)"
+
+
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
+
+log()
+{
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [PID $$] $*" >> "$LOGFILE"
+}
+
+
+# ------------------------------------------------------------
+# Check Borg
+# ------------------------------------------------------------
+
+if [ -z "$BORG" ] || [ ! -x "$BORG" ]; then
+    log "ERROR: borg was not found."
+    exit 1
+fi
+
+
+# ------------------------------------------------------------
+# Check passphrase file
+# ------------------------------------------------------------
+
+if [ ! -f "$PASSPHRASE_FILE" ]; then
+    log "ERROR: Borg passphrase file was not found: $PASSPHRASE_FILE"
+    exit 1
+fi
+
+
+# ------------------------------------------------------------
+# Check repository
+# ------------------------------------------------------------
+
+if [ ! -d "$REPO" ]; then
+    log "Backup skipped: repository $REPO is not available."
+    exit 0
+fi
+
+
+# ------------------------------------------------------------
+# Prevent parallel backup jobs
+# ------------------------------------------------------------
+
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    log "Backup skipped: another backup is already running."
+    exit 0
+fi
+
+
+cleanup()
+{
+    rmdir "$LOCKDIR" 2>/dev/null
+}
+
+trap cleanup EXIT INT TERM
+
+
+log "------------------------------------------------------------"
+log "Encrypted backup started."
+log "Lock acquired: $LOCKDIR"
+log "Borg: $BORG"
+log "Source: $SOURCE"
+log "Repository: $REPO"
+
+
+# ============================================================
+# BACKUP
+# ============================================================
+
+"$BORG" create \
+    --compression lz4 \
+    --stats \
+    --exclude "/boot/home/config/cache" \
+    "$REPO::home-{now:%Y-%m-%d_%H-%M-%S}" \
+    "$SOURCE" >> "$LOGFILE" 2>&1
+
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ]; then
+    log "ERROR: borg create exited with status $STATUS."
+    exit "$STATUS"
+fi
+
+log "Backup successful."
+
+
+# ============================================================
+# PRUNE
+#
+# Keep:
+#   24 hourly
+#    7 daily
+#    4 weekly
+#   12 monthly
+# ============================================================
+
+log "Prune started."
+
+"$BORG" prune \
+    --list \
+    "$REPO" \
+    --glob-archives 'home-*' \
+    --keep-hourly 24 \
+    --keep-daily 7 \
+    --keep-weekly 4 \
+    --keep-monthly 12 >> "$LOGFILE" 2>&1
+
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ]; then
+    log "ERROR: borg prune exited with status $STATUS."
+    exit "$STATUS"
+fi
+
+log "Prune completed."
+
+
+# ============================================================
+# COMPACT
+#
+# Borg 1.4 uses compact to reclaim unused repository space.
+# Run at most once every 7 days.
+# ============================================================
+
+DO_COMPACT=0
+
+if [ ! -f "$STAMPFILE" ]; then
+
+    DO_COMPACT=1
+
+else
+
+    LAST_COMPACT="$(cat "$STAMPFILE" 2>/dev/null)"
+    NOW="$(date +%s)"
+
+    if [ -n "$LAST_COMPACT" ]; then
+
+        AGE=$((NOW - LAST_COMPACT))
+
+        if [ "$AGE" -ge 604800 ]; then
+            DO_COMPACT=1
+        fi
+
+    else
+
+        DO_COMPACT=1
+
+    fi
+
+fi
+
+
+if [ "$DO_COMPACT" -eq 1 ]; then
+
+    log "Compact started."
+
+    "$BORG" compact "$REPO" >> "$LOGFILE" 2>&1
+
+    STATUS=$?
+
+    if [ "$STATUS" -ne 0 ]; then
+        log "ERROR: borg compact exited with status $STATUS."
+        exit "$STATUS"
+    fi
+
+    date +%s > "$STAMPFILE"
+
+    log "Compact completed."
+
+else
+
+    log "Compact not required."
+
+fi
+
+
+# ------------------------------------------------------------
+# Finished
+# ------------------------------------------------------------
+
+log "Encrypted backup completed."
+
+exit 0
