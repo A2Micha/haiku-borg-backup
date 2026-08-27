@@ -1,38 +1,71 @@
-# Borg Backup on Haiku
+# BorgBackup on Haiku
 
-A simple, automated BorgBackup setup for Haiku.
+A simple, automated and tested BorgBackup setup for Haiku.
 
-This setup creates hourly, deduplicated backups of the Haiku home directory to an external drive. It uses only BorgBackup, a shell script and cron — no Docker, server or additional backup management software is required.
+This project provides a small shell script for creating hourly, deduplicated backups of a Haiku user's home directory to an external drive.
 
-## Tested setup
+It deliberately keeps the setup simple:
 
-This configuration was tested with:
+* BorgBackup
+* a shell script
+* cron
+* an external backup drive
+
+No Docker, Linux VM, backup server or additional backup management software is required.
+
+## Tested configuration
+
+This setup has been tested with:
 
 * Haiku x86_64
 * BorgBackup 1.4.4
-* Haiku system on an SSD
-* Backup drive mounted as `/data`
-* BeFS on the backup drive
+* Haiku installed on an SSD
+* external backup HDD mounted at `/data`
+* BeFS on the backup HDD
 * Borg repository at `/data/borg-haiku`
-* Source directory `/boot/home`
+* backup source `/boot/home`
+* hourly execution via cron
 
-The backup drive in the tested setup is a conventional HDD connected via USB 2.0, while Haiku itself runs from an SSD connected through a USB 3.0 SATA adapter.
+In the original test setup, Haiku runs from an SSD connected through a USB 3.0 SATA adapter. The backup repository resides on a conventional HDD connected via USB 2.0.
+
+The setup has been tested not only for backup creation, but also for an actual restore.
+
+## Overview
+
+The basic setup looks like this:
+
+```text
+Haiku SSD
+│
+└── /boot/home
+        │
+        │ BorgBackup
+        ▼
+External HDD mounted as /data
+│
+└── borg-haiku
+        │
+        ├── hourly snapshots
+        ├── deduplication
+        ├── automatic pruning
+        └── periodic compaction
+```
 
 ## Backup strategy
 
-The setup creates hourly snapshots of:
+The automated backup covers:
 
 ```text
 /boot/home
 ```
 
-and stores them in:
+The Borg repository is stored at:
 
 ```text
 /data/borg-haiku
 ```
 
-Retention policy:
+The retention policy is:
 
 ```text
 24 hourly backups
@@ -41,11 +74,13 @@ Retention policy:
 12 monthly backups
 ```
 
-Borg's deduplication means that every archive represents a complete snapshot without storing unchanged files again.
+Borg uses deduplication, so each archive behaves like a complete snapshot while unchanged data does not have to be stored again.
 
-## Install BorgBackup
+There is no need to start over with a new full backup every few weeks or months.
 
-Install Borg using Haiku's package manager:
+## 1. Install BorgBackup
+
+Install BorgBackup using Haiku's package manager:
 
 ```sh
 pkgman install borgbackup
@@ -57,37 +92,57 @@ Check the installed version:
 borg --version
 ```
 
-The tested version was:
+This setup was tested with:
 
 ```text
 borg 1.4.4
 ```
 
-## Prepare the backup drive
+## 2. Prepare the backup drive
 
-In this example, the external backup drive is mounted at:
+The examples in this documentation assume that the external backup drive is mounted at:
 
 ```text
 /data
 ```
 
-The tested drive uses BeFS.
+The tested backup drive uses BeFS.
 
-Make sure that `/data` really points to the intended backup drive before continuing.
+Before creating the repository, make sure `/data` really points to the intended external drive.
 
-## Create the Borg repository
+For example:
 
-This example uses an unencrypted repository:
+```sh
+df -h
+```
+
+The repository used by the script will be:
+
+```text
+/data/borg-haiku
+```
+
+## 3. Create the Borg repository
+
+The tested setup uses an unencrypted Borg repository:
 
 ```sh
 borg init --encryption=none /data/borg-haiku
 ```
 
-If the backup drive can be lost, stolen or accessed by other people, consider using Borg repository encryption instead.
+### About encryption
 
-## Optional initial full-system archive
+`--encryption=none` was deliberately used for the tested setup.
 
-An initial archive of the complete Haiku volume can be useful as a baseline:
+If your backup drive may be lost, stolen or accessed by other people, you should consider using Borg repository encryption instead.
+
+If you choose encryption, you will also need a suitable method for making the Borg passphrase available to unattended cron jobs.
+
+The script in this repository is currently configured for an intentionally unencrypted repository.
+
+## 4. Optional initial full-system backup
+
+Before switching to automated `/boot/home` backups, you may optionally create one initial archive of the complete Haiku volume:
 
 ```sh
 borg create \
@@ -98,20 +153,29 @@ borg create \
     /boot
 ```
 
-The regular automated backups described below only back up `/boot/home`.
+This is not required for the hourly backup system.
 
-Using different archive prefixes keeps the initial full backup separate from automatically pruned home backups.
+It can, however, be useful as an initial baseline.
 
-For example:
+The automated script uses a different archive prefix:
 
 ```text
 haiku-2026-08-26_21-57
 home-2026-08-26_23-04-52
+home-2026-08-27_00-15-53
 ```
 
-## Install the backup script
+This distinction is important because automatic pruning only operates on archives beginning with:
 
-Create:
+```text
+home-
+```
+
+Therefore an initial `haiku-*` full-system archive is not affected by the automated retention policy.
+
+## 5. Install the backup script
+
+Place the included `haiku-backup` script at:
 
 ```text
 /boot/home/config/non-packaged/bin/haiku-backup
@@ -123,27 +187,124 @@ Make it executable:
 chmod +x /boot/home/config/non-packaged/bin/haiku-backup
 ```
 
-The script is included in this repository.
-
-It performs the following operations:
+The script performs the following sequence:
 
 ```text
 Check Borg
-     ↓
-Check backup repository
-     ↓
-Prevent parallel backup jobs
-     ↓
+     │
+     ▼
+Check repository
+     │
+     ▼
+Acquire local script lock
+     │
+     ▼
 borg create
-     ↓
+     │
+     ▼
 borg prune
-     ↓
-borg compact every 7 days
-     ↓
-write log
+     │
+     ▼
+borg compact
+(if 7 days have passed)
+     │
+     ▼
+Write result to log
 ```
 
-## Cron configuration
+## 6. Borg environment under cron
+
+Cron does not necessarily provide the same environment as an interactive Haiku Terminal.
+
+The script therefore explicitly sets:
+
+```sh
+export HOME="/boot/home"
+export PATH="/boot/system/bin:/boot/home/config/non-packaged/bin:/bin"
+
+export BORG_CONFIG_DIR="/boot/home/config/settings/borg"
+export BORG_CACHE_DIR="/boot/home/config/cache/borg"
+export BORG_SECURITY_DIR="/boot/home/config/settings/borg/security"
+```
+
+The script automatically creates the required directories:
+
+```sh
+mkdir -p "$LOGDIR"
+mkdir -p "$BORG_CONFIG_DIR"
+mkdir -p "$BORG_CACHE_DIR"
+mkdir -p "$BORG_SECURITY_DIR"
+```
+
+You therefore do not normally need to create these directories manually.
+
+If you want to prepare them yourself, the relevant directories can be created with:
+
+```sh
+mkdir -p /boot/home/config/settings/borg/security
+mkdir -p /boot/home/config/cache/borg
+```
+
+Using persistent Borg cache and security directories is important for unattended cron operation.
+
+Without a consistent Borg environment, Borg may consider the repository previously unknown or rebuild its local cache.
+
+## 7. Unencrypted repository warning
+
+When an unencrypted repository is accessed from a previously unknown Borg environment, Borg may display:
+
+```text
+Warning: Attempting to access a previously unknown unencrypted repository!
+Do you want to continue? [yN]
+```
+
+An interactive terminal can answer this question manually, but a cron job cannot.
+
+Because this setup deliberately uses `--encryption=none`, the script contains:
+
+```sh
+export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes
+```
+
+This allows the unattended backup to continue.
+
+> **Important:** Do not blindly use this setting for repositories whose identity or location you do not trust. It is used here specifically because the repository was intentionally created without encryption on a known local backup drive.
+
+## 8. Test the script manually
+
+Before enabling cron, run the script manually:
+
+```sh
+/boot/home/config/non-packaged/bin/haiku-backup
+```
+
+The script writes its output to the log rather than the terminal.
+
+Watch the log with:
+
+```sh
+tail -f /boot/home/config/non-packaged/var/log/borg-backup.log
+```
+
+A successful run should end with messages similar to:
+
+```text
+Backup erfolgreich.
+Prune gestartet.
+Prune abgeschlossen.
+Compact nicht erforderlich.
+Backup vollständig abgeschlossen.
+```
+
+The script also records its process ID:
+
+```text
+2026-08-27 00:15:53 [PID 7204] Backup gestartet.
+```
+
+This makes it easier to diagnose duplicate or overlapping backup processes.
+
+## 9. Enable hourly backups with cron
 
 Edit the user's crontab:
 
@@ -157,69 +318,43 @@ Add:
 0 * * * * /boot/home/config/non-packaged/bin/haiku-backup
 ```
 
-This starts a backup at the beginning of every hour.
+This starts the backup at the beginning of every hour.
 
-Check the configuration with:
+Verify the crontab:
 
 ```sh
 crontab -l
 ```
 
-## Borg and cron environment
+It should contain:
 
-Cron has a more limited environment than an interactive Haiku Terminal. To make sure Borg always uses the same persistent configuration, cache and security directories, create them first:
-
-```sh
-mkdir -p /boot/home/config/settings/borg/security
-mkdir -p /boot/home/config/cache/borg
+```cron
+0 * * * * /boot/home/config/non-packaged/bin/haiku-backup
 ```
 
-The backup script explicitly sets the required environment:
+## 10. Protection against overlapping backups
 
-```sh
-export HOME="/boot/home"
-export PATH="/boot/system/bin:/boot/home/config/non-packaged/bin:/bin"
-
-export BORG_CONFIG_DIR="/boot/home/config/settings/borg"
-export BORG_CACHE_DIR="/boot/home/config/cache/borg"
-export BORG_SECURITY_DIR="/boot/home/config/settings/borg/security"
-```
-
-This is important when Borg is started by cron. Without persistent Borg cache and security directories, Borg may treat the repository as previously unknown or rebuild its local cache.
-
-For the unencrypted repository used in this example, the script also contains:
-
-```sh
-export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes
-```
-
-Without this setting, an unattended cron job may stop at:
+The script creates a local lock directory:
 
 ```text
-Warning: Attempting to access a previously unknown unencrypted repository!
-Do you want to continue? [yN]
+/tmp/haiku-borg-backup.lock
 ```
 
-The environment variable allows Borg to automatically confirm access to the intentionally unencrypted repository.
+If another instance of the script is already running, a second instance exits instead of starting another backup.
 
-> **Note:** This setup uses a repository that was deliberately created with `--encryption=none`. Do not blindly use `BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes` for repositories whose identity or location you do not trust.
+This is useful if a backup takes longer than expected and the next cron interval is reached.
 
+Borg itself also protects its repository using its own repository locking mechanism.
 
-## Logging
+## 11. Archive naming
 
-The script writes its log to:
+Automated backups use names such as:
 
 ```text
-/boot/home/config/non-packaged/var/log/borg-backup.log
+home-2026-08-27_00-15-53
 ```
 
-Watch a running backup with:
-
-```sh
-tail -f /boot/home/config/non-packaged/var/log/borg-backup.log
-```
-
-## List available backups
+List the available archives with:
 
 ```sh
 borg list /data/borg-haiku
@@ -230,17 +365,88 @@ Example:
 ```text
 haiku-2026-08-26_21-57
 home-2026-08-26_23-04-52
+home-2026-08-27_00-15-53
 ```
 
-Only archives beginning with `home-` are automatically pruned.
+The `haiku-*` archive is an optional manually created full-system backup.
 
-The initial `haiku-*` archive therefore remains untouched.
+The `home-*` archives are generated automatically.
 
-## Deduplication
+## 12. Automatic pruning
 
-A test after the initial full backup showed Borg's deduplication working as expected.
+After every successful backup, the script runs:
 
-The subsequent `/boot/home` archive contained approximately:
+```sh
+borg prune \
+    --list \
+    /data/borg-haiku \
+    --glob-archives 'home-*' \
+    --keep-hourly 24 \
+    --keep-daily 7 \
+    --keep-weekly 4 \
+    --keep-monthly 12
+```
+
+This means Borg keeps approximately:
+
+```text
+last 24 hours  → hourly snapshots
+last 7 days    → daily snapshots
+last 4 weeks   → weekly snapshots
+last 12 months → monthly snapshots
+```
+
+Borg does not simply keep every hourly archive forever.
+
+It automatically thins out older `home-*` snapshots according to the retention policy.
+
+For example, if several test backups are created within the same hour, pruning may keep only the most recent archive representing that hour.
+
+The optional `haiku-*` full-system archive is not affected because pruning is explicitly restricted to:
+
+```text
+home-*
+```
+
+## 13. Repository compaction
+
+With Borg 1.4.x, pruning removes archives from the backup history, but repository compaction is used to reclaim unused repository space.
+
+Running `borg compact` after every hourly backup would be unnecessary, especially on a slower external HDD.
+
+The script therefore keeps a timestamp at:
+
+```text
+/boot/home/config/non-packaged/var/log/last-compact
+```
+
+and runs:
+
+```sh
+borg compact /data/borg-haiku
+```
+
+only when at least seven days have passed since the previous successful compaction.
+
+The hourly cron configuration remains simple:
+
+```cron
+0 * * * * /boot/home/config/non-packaged/bin/haiku-backup
+```
+
+No separate cron job for `compact` is required.
+
+## 14. Deduplication test
+
+The initial full `/boot` backup in the tested setup contained approximately:
+
+```text
+Original size:       84.20 GB
+Compressed size:     67.89 GB
+Deduplicated size:   63.16 GB
+```
+
+A subsequent `/boot/home` archive contained approximately:
 
 ```text
 Original size:       20.08 GB
@@ -248,17 +454,25 @@ Compressed size:     15.84 GB
 Deduplicated size:    9.93 MB
 ```
 
-Although the home directory contained about 20 GB, only around 10 MB of new data had to be added to the repository because most data was already present in the initial `/boot` archive.
+Although `/boot/home` contained about 20 GB, only around 10 MB of new data had to be added to the repository during that test.
 
-## Restore a directory
+This happened because most of the data was already present in the initial `/boot` archive.
 
-First find the path inside an archive:
+Later hourly snapshots similarly only need to store new or changed chunks.
+
+## 15. Restore a directory
+
+A backup is only useful if it can actually be restored.
+
+The restore procedure was therefore tested by deleting `/boot/home/Downloads` and restoring it from a Borg archive.
+
+First find the path in the archive:
 
 ```sh
 borg list /data/borg-haiku::home-2026-08-26_23-04-52 | grep Downloads
 ```
 
-The Haiku Downloads directory appears inside the archive as:
+The directory appears as:
 
 ```text
 boot/home/Downloads
@@ -270,7 +484,7 @@ To restore it directly to its original location, change to the filesystem root:
 cd /
 ```
 
-Then extract:
+Then run:
 
 ```sh
 borg extract \
@@ -279,44 +493,50 @@ borg extract \
     boot/home/Downloads
 ```
 
-This restores:
+Because Borg extracts relative to the current working directory, running the command from `/` restores the directory to:
 
 ```text
 /boot/home/Downloads
 ```
 
-A real restore test was performed by deleting `/boot/home/Downloads` and restoring it using this procedure.
+The restored directory was verified successfully after the test.
 
-## Repository check
+### Safer restore testing
 
-Check repository consistency with:
+If you do not want to overwrite or modify existing files, restore into a temporary directory instead:
+
+```sh
+mkdir -p /boot/home/restore-test
+cd /boot/home/restore-test
+```
+
+Then extract the desired path there.
+
+This allows you to inspect the restored files before copying anything back to the original location.
+
+## 16. Repository integrity check
+
+A basic repository consistency check can be performed with:
 
 ```sh
 borg check /data/borg-haiku
 ```
 
-A more thorough data verification can be performed occasionally with:
+A more thorough verification can occasionally be performed with:
 
 ```sh
 borg check --verify-data /data/borg-haiku
 ```
 
-On the tested BeFS backup drive Borg displayed:
+`--verify-data` reads and verifies repository data and can therefore take considerably longer on a large repository or a slow external drive.
 
-```text
-Failed to securely erase old repository config file (hardlinks not supported).
-Old repokey data, if any, might persist on physical storage.
-```
+It should not be run every hour.
 
-The tested repository uses `--encryption=none`, so there is no repository encryption key stored by Borg.
-
-This warning should nevertheless be considered when deciding whether BeFS is appropriate for encrypted Borg repositories.
-
-## BeFS
+## 17. BeFS note
 
 The tested Borg repository resides on a BeFS filesystem.
 
-The following operations were successfully tested:
+The following operations have been successfully tested on this setup:
 
 * `borg init`
 * `borg create`
@@ -325,46 +545,180 @@ The following operations were successfully tested:
 * `borg compact`
 * `borg list`
 * `borg extract`
-* restoring files to their original location
+* restoring a deleted directory to its original location
+* `borg check`
 
-This does not constitute a guarantee that every Borg feature or failure scenario is fully supported on BeFS.
+During `borg check`, Borg displayed:
 
-## Important backup consideration
+```text
+Failed to securely erase old repository config file (hardlinks not supported).
+Old repokey data, if any, might persist on physical storage.
+```
 
-If `/data` is also used for ordinary files, remember:
+The tested repository uses:
+
+```text
+--encryption=none
+```
+
+so it does not contain a Borg repository encryption key.
+
+The warning is nevertheless worth documenting, particularly for anyone considering an encrypted Borg repository on BeFS.
+
+Successful testing of this setup does not constitute a guarantee that every Borg feature, filesystem failure mode or recovery scenario is fully supported on BeFS.
+
+## 18. Log file
+
+The backup log is stored at:
+
+```text
+/boot/home/config/non-packaged/var/log/borg-backup.log
+```
+
+Show the last 50 lines:
+
+```sh
+tail -50 /boot/home/config/non-packaged/var/log/borg-backup.log
+```
+
+Watch it live:
+
+```sh
+tail -f /boot/home/config/non-packaged/var/log/borg-backup.log
+```
+
+The current script uses German status messages in the log, but this does not affect Borg operation.
+
+## 19. Troubleshooting
+
+### Repository is reported as unknown
+
+If cron reports:
+
+```text
+Warning: Attempting to access a previously unknown unencrypted repository!
+```
+
+make sure the script contains the persistent Borg environment:
+
+```sh
+export BORG_CONFIG_DIR="/boot/home/config/settings/borg"
+export BORG_CACHE_DIR="/boot/home/config/cache/borg"
+export BORG_SECURITY_DIR="/boot/home/config/settings/borg/security"
+```
+
+and that these directories are writable by the user running the cron job.
+
+### Repository lock error
+
+If Borg reports:
+
+```text
+Failed to create/acquire the lock /data/borg-haiku/lock.exclusive
+```
+
+first check whether another Borg process is still running:
+
+```sh
+ps | grep borg
+```
+
+Do **not** break a Borg repository lock while another Borg operation is still active.
+
+A lock error can be completely normal if another backup, check, prune or compact operation is currently using the repository.
+
+### Backup drive is disconnected
+
+If `/data/borg-haiku` does not exist, the script does not attempt a backup.
+
+Instead it writes a message to the log and exits.
+
+This is useful for portable Haiku installations where the backup HDD may not always be connected.
+
+### Check whether cron is configured
+
+```sh
+crontab -l
+```
+
+The expected entry is:
+
+```cron
+0 * * * * /boot/home/config/non-packaged/bin/haiku-backup
+```
+
+## 20. Important: `/data` itself is not backed up
+
+The Borg repository protects:
+
+```text
+/boot/home
+```
+
+If the `/data` drive is also used for ordinary storage, for example:
 
 ```text
 /data/borg-haiku
 /data/photos
 /data/archive
+/data/projects
 ```
 
-The Borg repository protects `/boot/home`.
+files stored only in `/data/photos`, `/data/archive`, `/data/projects`, etc. are **not** protected by the Borg repository residing on that same drive.
 
-Files that exist **only on `/data` are not protected by the Borg repository located on the same drive**.
+If the `/data` HDD fails, both those files and the Borg repository on that HDD may be lost.
 
-Important data stored exclusively on `/data` should therefore have another independent backup.
+Important data that exists exclusively on `/data` should therefore have another independent backup.
 
-## Why this setup?
+## 21. Sync is not the same as backup
 
-The goal is to keep backup infrastructure on Haiku simple:
+If parts of `/boot/home` are also synchronized to a service such as Nextcloud, keeping them in the Borg backup can still be useful.
+
+Synchronization and backup solve different problems.
+
+A synchronization service may propagate deletions or unwanted changes, while Borg provides historical snapshots from which older versions can be restored.
+
+For important data, using both can therefore provide useful additional protection.
+
+## 22. Why this setup?
+
+The goal of this project is not to build a large backup infrastructure.
+
+It is to provide a small and understandable backup solution that fits the Haiku philosophy well:
 
 ```text
-Haiku / BeFS
-     │
-     │ /boot/home
-     ▼
-BorgBackup
-     │
-     ▼
-External HDD / BeFS
-     │
-     ├── hourly snapshots
-     ├── deduplication
-     ├── automatic retention
-     └── tested restore
+Haiku
+  │
+  └── /boot/home
+          │
+          ▼
+      BorgBackup
+          │
+          ▼
+    External HDD
+          │
+          ├── deduplicated snapshots
+          ├── automatic retention
+          ├── periodic compaction
+          └── tested restore
 ```
 
-No Docker, Linux VM or backup server is necessary.
+No Docker.
 
-The result is a small, transparent backup solution that fits well with a portable Haiku workstation.
+No Linux VM.
+
+No dedicated backup server.
+
+Just BorgBackup, cron and an external drive.
+
+## Disclaimer
+
+This configuration works on the system on which it was tested, but backups should never be trusted solely because a command completed successfully.
+
+Test restores yourself.
+
+Check your repository periodically.
+
+Keep additional independent copies of irreplaceable data.
+
+A backup that has never been restored is an untested backup.
