@@ -32,6 +32,9 @@ export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes
 REPO="/data/borg-haiku"
 SOURCE="/boot/home"
 
+# Never include the Borg passphrase file in an unencrypted backup.
+PASSPHRASE_FILE="/boot/home/config/settings/borg/backup-passphrase"
+
 LOGDIR="/boot/home/config/non-packaged/var/log"
 LOGFILE="$LOGDIR/borg-backup.log"
 
@@ -120,6 +123,7 @@ log "Repository: $REPO"
     --compression lz4 \
     --stats \
     --exclude "/boot/home/config/cache" \
+    --exclude "$PASSPHRASE_FILE" \
     "$REPO::home-{now:%Y-%m-%d_%H-%M-%S}" \
     "$SOURCE" >> "$LOGFILE" 2>&1
 
@@ -170,7 +174,7 @@ log "Prune abgeschlossen."
 # ============================================================
 # COMPACT
 #
-# Borg 1.4 needs compact to reclaim unused repository space.
+# Borg 1.4 uses compact to reclaim unused repository space.
 # Run at most once every 7 days.
 # ============================================================
 
