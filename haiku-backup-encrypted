@@ -2,7 +2,7 @@
 
 # ============================================================
 # Haiku Borg Backup - Encrypted Repository
-# Tested with Borg 1.4.x
+# Borg 1.4.x
 #
 # Source:     /boot/home
 # Repository: /data/borg-haiku-encrypted
@@ -21,9 +21,6 @@ export BORG_CONFIG_DIR="/boot/home/config/settings/borg"
 export BORG_CACHE_DIR="/boot/home/config/cache/borg"
 export BORG_SECURITY_DIR="/boot/home/config/settings/borg/security"
 
-# Borg reads the passphrase from a separate protected file.
-export BORG_PASSCOMMAND="cat /boot/home/config/settings/borg/backup-passphrase"
-
 
 # ------------------------------------------------------------
 # Configuration
@@ -39,6 +36,10 @@ LOGFILE="$LOGDIR/borg-backup-encrypted.log"
 
 LOCKDIR="/tmp/haiku-borg-encrypted-backup.lock"
 STAMPFILE="$LOGDIR/last-compact-encrypted"
+
+
+# Borg reads the passphrase from a separate protected file.
+export BORG_PASSCOMMAND="cat $PASSPHRASE_FILE"
 
 
 # ------------------------------------------------------------
@@ -126,12 +127,16 @@ log "Repository: $REPO"
 
 # ============================================================
 # BACKUP
+#
+# The passphrase file itself is explicitly excluded so it is
+# never stored inside the Borg repository.
 # ============================================================
 
 "$BORG" create \
     --compression lz4 \
     --stats \
     --exclude "/boot/home/config/cache" \
+    --exclude "$PASSPHRASE_FILE" \
     "$REPO::home-{now:%Y-%m-%d_%H-%M-%S}" \
     "$SOURCE" >> "$LOGFILE" 2>&1
 
