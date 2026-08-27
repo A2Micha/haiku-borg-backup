@@ -13,6 +13,18 @@ It deliberately keeps the setup simple:
 
 No Docker, Linux VM, backup server or additional backup management software is required.
 
+## Encrypted backups
+
+This repository also contains an encrypted version of the backup setup.
+
+The encrypted configuration uses a Borg `repokey-blake2` repository and
+`BORG_PASSCOMMAND` for unattended cron backups without storing the actual
+passphrase inside the backup script.
+
+See:
+
+[Encrypted BorgBackup setup](docs/ENCRYPTION.md)
+
 ## Tested configuration
 
 This setup has been tested with:
