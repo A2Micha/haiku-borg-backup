@@ -167,29 +167,43 @@ crontab -l
 
 ## Borg and cron environment
 
-Cron has a more limited environment than an interactive Haiku Terminal.
+Cron has a more limited environment than an interactive Haiku Terminal. To make sure Borg always uses the same persistent configuration, cache and security directories, create them first:
 
-The script therefore explicitly sets:
+```sh
+mkdir -p /boot/home/config/settings/borg/security
+mkdir -p /boot/home/config/cache/borg
+```
+
+The backup script explicitly sets the required environment:
 
 ```sh
 export HOME="/boot/home"
 export PATH="/boot/system/bin:/boot/home/config/non-packaged/bin:/bin"
+
+export BORG_CONFIG_DIR="/boot/home/config/settings/borg"
+export BORG_CACHE_DIR="/boot/home/config/cache/borg"
+export BORG_SECURITY_DIR="/boot/home/config/settings/borg/security"
 ```
 
-For the unencrypted repository used in this example it also contains:
+This is important when Borg is started by cron. Without persistent Borg cache and security directories, Borg may treat the repository as previously unknown or rebuild its local cache.
+
+For the unencrypted repository used in this example, the script also contains:
 
 ```sh
 export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes
 ```
 
-Without this setting, Borg may stop an automated cron job with:
+Without this setting, an unattended cron job may stop at:
 
 ```text
 Warning: Attempting to access a previously unknown unencrypted repository!
 Do you want to continue? [yN]
 ```
 
-Do not blindly use this setting for repositories whose identity or location you do not trust.
+The environment variable allows Borg to automatically confirm access to the intentionally unencrypted repository.
+
+> **Note:** This setup uses a repository that was deliberately created with `--encryption=none`. Do not blindly use `BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes` for repositories whose identity or location you do not trust.
+
 
 ## Logging
 
