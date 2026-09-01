@@ -46,7 +46,8 @@ _metrics_cache: dict[int, tuple[float, dict]] = {}
 METRICS_TTL = int(os.getenv("METRICS_TTL", "300"))
 METRICS_CONCURRENCY = max(1, int(os.getenv("METRICS_CONCURRENCY", "2")))
 _metrics_semaphore = asyncio.Semaphore(METRICS_CONCURRENCY)
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
+_UNIX_WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
 
 
 def _spawn(coro: Coroutine) -> asyncio.Task:
@@ -99,10 +100,72 @@ def _serialize_schedule(schedule: Schedule) -> dict:
     }
 
 
+def _expand_unix_weekday_token(token: str) -> list[str]:
+    """Convert Unix-cron weekday numbers (0/7=Sun, 1=Mon) to names.
+
+    APScheduler 3.x historically treats numeric 0 as Monday even when parsing a
+    crontab expression. Using names avoids that mismatch and preserves standard
+    Unix cron semantics for schedules already stored by older Borg Manager builds.
+    """
+    token = token.strip().lower()
+    if not token:
+        raise ValueError("empty day-of-week token")
+    if token == "*":
+        return ["*"]
+    if re.search(r"[a-z]", token):
+        return [token]
+
+    step = 1
+    base = token
+    if "/" in token:
+        base, step_text = token.split("/", 1)
+        step = int(step_text)
+        if step < 1 or step > 7:
+            raise ValueError("day-of-week step must be between 1 and 7")
+
+    def day_number(text: str) -> int:
+        value = int(text)
+        if value == 7:
+            value = 0
+        if value < 0 or value > 6:
+            raise ValueError("day-of-week must be 0-7")
+        return value
+
+    if base == "*":
+        numbers = list(range(0, 7))[::step]
+    elif "-" in base:
+        start_text, end_text = base.split("-", 1)
+        start, end = day_number(start_text), day_number(end_text)
+        if start <= end:
+            numbers = list(range(start, end + 1))
+        else:
+            numbers = list(range(start, 7)) + list(range(0, end + 1))
+        numbers = numbers[::step]
+    else:
+        numbers = [day_number(base)]
+
+    return [_UNIX_WEEKDAYS[number] for number in numbers]
+
+
+def _cron_for_apscheduler(expr: str) -> str:
+    parts = expr.strip().split()
+    if len(parts) != 5:
+        raise ValueError(f"Wrong number of fields; got {len(parts)}, expected 5")
+    weekday = parts[4]
+    if weekday != "*":
+        converted: list[str] = []
+        for token in weekday.split(","):
+            converted.extend(_expand_unix_weekday_token(token))
+        # De-duplicate while preserving the user's ordering.
+        parts[4] = ",".join(dict.fromkeys(converted))
+    return " ".join(parts)
+
+
 def _validate_cron(expr: str) -> CronTrigger:
     try:
-        return CronTrigger.from_crontab(expr, timezone=os.getenv("TZ", "Europe/Berlin"))
-    except ValueError as exc:
+        normalized = _cron_for_apscheduler(expr)
+        return CronTrigger.from_crontab(normalized, timezone=os.getenv("TZ", "Europe/Berlin"))
+    except (ValueError, TypeError) as exc:
         raise HTTPException(422, f"Invalid cron expression: {exc}") from exc
 
 
