@@ -29,28 +29,10 @@ jobs:
           end = text.index('\n\nfunction Archives(){', start)
           path.write_text(text[:start] + new + text[end:])
           PY
-      - name: Restore normal CI workflow and commit
+      - name: Commit scheduler UI only
         run: |
-          cat > .github/workflows/borg-manager-build.yml <<'EOF'
-          name: Borg Manager Build
-
-          on:
-            push:
-              branches: [borg-manager-mvp]
-            pull_request:
-              branches: [borg-manager-mvp]
-
-          jobs:
-            build:
-              runs-on: ubuntu-latest
-              steps:
-                - uses: actions/checkout@v4
-                - name: Build Docker images
-                  run: docker compose build
-          EOF
-          rm -f .github/workflows/upgrade-scheduler-ui.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add frontend/src/main.tsx .github/workflows/borg-manager-build.yml .github/workflows/upgrade-scheduler-ui.yml
+          git add frontend/src/main.tsx
           git commit -m "Add fine-grained schedule interval picker"
           git push origin HEAD:borg-manager-mvp
