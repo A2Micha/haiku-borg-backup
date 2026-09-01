@@ -4,3 +4,4 @@ SQLAlchemy==2.0.43
 pydantic==2.11.7
 cryptography==45.0.6
 python-multipart==0.0.20
+APScheduler==3.11.0
