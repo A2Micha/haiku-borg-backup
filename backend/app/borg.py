@@ -8,6 +8,8 @@ from .security import decrypt_secret
 
 MOCK_BORG = os.getenv("MOCK_BORG", "0") == "1"
 RESTORE_ROOT = Path(os.getenv("RESTORE_ROOT", "/restore")).resolve()
+BORG_REPO_CONTAINER_ROOT = Path(os.getenv("BORG_REPO_CONTAINER_ROOT", "/repos"))
+BORG_REPO_HOST_ROOT_RAW = os.getenv("BORG_REPO_HOST_ROOT", "")
 
 
 class BorgError(RuntimeError):
@@ -29,11 +31,76 @@ def borg_available() -> bool:
     return shutil.which("borg") is not None
 
 
+def _is_remote_repository(value: str) -> bool:
+    if value.startswith(("ssh://", "sftp://")):
+        return True
+    # Borg's scp-like syntax, e.g. user@example.org:/backup/repo
+    return ":" in value and not value.startswith("/")
+
+
+def _map_repository_path(value: str) -> str:
+    """Map a host-visible repository path to the writable /repos bind mount.
+
+    Docker exposes backup source data under /host read-only. The repository
+    storage configured with BORG_REPO_ROOT is exposed separately under /repos
+    read/write. Users may nevertheless paste either the real host path
+    (/mnt/backup/borg/repo1) or its /host view
+    (/host/mnt/backup/borg/repo1). This function transparently maps both forms
+    to /repos/repo1 before Borg is executed.
+    """
+    if not value or _is_remote_repository(value):
+        return value
+
+    archive_suffix = ""
+    base = value
+    if "::" in value:
+        base, archive = value.split("::", 1)
+        archive_suffix = f"::{archive}"
+
+    if not base.startswith("/"):
+        return value
+
+    base_path = Path(base)
+    try:
+        base_path.relative_to(BORG_REPO_CONTAINER_ROOT)
+        return value
+    except ValueError:
+        if base_path == BORG_REPO_CONTAINER_ROOT:
+            return value
+
+    if not BORG_REPO_HOST_ROOT_RAW or not os.path.isabs(BORG_REPO_HOST_ROOT_RAW):
+        return value
+
+    host_root = Path(BORG_REPO_HOST_ROOT_RAW).resolve()
+
+    # /host is the read-only view of the Docker host. Translate it back to a
+    # real host path for comparison with BORG_REPO_HOST_ROOT.
+    if base == "/host":
+        host_candidate = Path("/")
+    elif base.startswith("/host/"):
+        host_candidate = Path("/" + base[len("/host/"):])
+    else:
+        host_candidate = Path(base)
+
+    try:
+        relative = host_candidate.relative_to(host_root)
+    except ValueError:
+        return value
+
+    mapped = BORG_REPO_CONTAINER_ROOT / relative
+    return f"{mapped}{archive_suffix}"
+
+
+def _normalize_borg_args(args: list[str]) -> list[str]:
+    return [_map_repository_path(arg) for arg in args]
+
+
 async def run_capture(
     args: list[str],
     encrypted_passphrase: str | None = None,
     cwd: str | None = None,
 ) -> tuple[int, str, str]:
+    args = _normalize_borg_args(args)
     if MOCK_BORG:
         await asyncio.sleep(0.1)
         if "info" in args and "--json" in args:
@@ -63,6 +130,7 @@ async def stream_process(
     args: list[str],
     encrypted_passphrase: str | None = None,
 ) -> AsyncIterator[tuple[str, asyncio.subprocess.Process | None]]:
+    args = _normalize_borg_args(args)
     if MOCK_BORG:
         for line in ["Preparing files…", "Creating archive…", "42.3 GB processed", "Backup completed successfully"]:
             await asyncio.sleep(0.35)
