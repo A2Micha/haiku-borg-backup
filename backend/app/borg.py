@@ -20,6 +20,17 @@ class BorgError(RuntimeError):
     pass
 
 
+def _lexical_absolute(value: str) -> Path:
+    """Normalize an absolute path without resolving symlinks in the container.
+
+    Host paths such as /etc or /home refer to the Docker host, so resolving them
+    against the container's own filesystem before mapping to /host would be wrong.
+    """
+    if not os.path.isabs(value):
+        raise ValueError("path is not absolute")
+    return Path(os.path.normpath(value))
+
+
 def _env(encrypted_passphrase: str | None) -> dict[str, str]:
     env = os.environ.copy()
     try:
@@ -69,7 +80,7 @@ def map_repository_path(value: str) -> str:
     if not base.startswith("/"):
         return value
 
-    base_path = Path(base)
+    base_path = _lexical_absolute(base)
     try:
         base_path.relative_to(BORG_REPO_CONTAINER_ROOT)
         return f"{base_path}{archive_suffix}"
@@ -79,16 +90,16 @@ def map_repository_path(value: str) -> str:
     if not BORG_REPO_HOST_ROOT_RAW or not os.path.isabs(BORG_REPO_HOST_ROOT_RAW):
         return value
 
-    host_root = Path(BORG_REPO_HOST_ROOT_RAW).resolve()
+    host_root = _lexical_absolute(BORG_REPO_HOST_ROOT_RAW)
     if base == str(HOST_CONTAINER_ROOT):
         host_candidate = Path("/")
     elif base.startswith(str(HOST_CONTAINER_ROOT) + "/"):
-        host_candidate = Path("/" + base[len(str(HOST_CONTAINER_ROOT)) + 1 :])
+        host_candidate = _lexical_absolute("/" + base[len(str(HOST_CONTAINER_ROOT)) + 1 :])
     else:
-        host_candidate = Path(base)
+        host_candidate = base_path
 
     try:
-        relative = host_candidate.resolve(strict=False).relative_to(host_root)
+        relative = host_candidate.relative_to(host_root)
     except ValueError:
         return value
 
@@ -136,9 +147,10 @@ def normalize_source_path(value: str) -> str:
         raise BorgError(f"Backup source path must be absolute: {value}")
 
     if HOST_SOURCE_ROOT_RAW and os.path.isabs(HOST_SOURCE_ROOT_RAW):
-        host_root = Path(HOST_SOURCE_ROOT_RAW).resolve()
+        host_root = _lexical_absolute(HOST_SOURCE_ROOT_RAW)
+        host_candidate = _lexical_absolute(value)
         try:
-            relative = candidate.resolve(strict=False).relative_to(host_root)
+            relative = host_candidate.relative_to(host_root)
             mapped = HOST_CONTAINER_ROOT if str(relative) == "." else HOST_CONTAINER_ROOT / relative
             return str(mapped)
         except ValueError:
