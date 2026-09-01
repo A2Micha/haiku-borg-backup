@@ -2,6 +2,7 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    stop_grace_period: 30s
     environment:
       DATABASE_URL: sqlite:////data/borg-manager.db
       APP_SECRET: ${APP_SECRET:-please-change-this-secret}
@@ -9,10 +10,14 @@ services:
       MOCK_BORG: ${MOCK_BORG:-0}
       TZ: ${TZ:-Europe/Berlin}
       BORG_REPO_HOST_ROOT: ${BORG_REPO_ROOT:-./repositories}
+      BORG_REPO_CONTAINER_ROOT: /repos
+      HOST_SOURCE_ROOT: ${HOST_ROOT:-./demo-sources}
+      HOST_CONTAINER_ROOT: /host
+      BORG_LOCK_WAIT: ${BORG_LOCK_WAIT:-60}
+      METRICS_TTL: ${METRICS_TTL:-300}
+      METRICS_CONCURRENCY: ${METRICS_CONCURRENCY:-2}
     volumes:
-      - borg_manager_data:/data
       # Writable Borg repository storage on the Docker host.
-      # Example: BORG_REPO_ROOT=/mnt/backup/borg -> container /repos
       - ${BORG_REPO_ROOT:-./repositories}:/repos
       # Backup source data is intentionally read-only.
       - ${HOST_ROOT:-./demo-sources}:/host:ro
@@ -20,14 +25,27 @@ services:
       - ./restore-output:/restore
       - ${HOME}/.ssh:/root/.ssh:ro
       - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   frontend:
     build: ./frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "${PORT:-8081}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
 
 volumes:
   borg_manager_data:
