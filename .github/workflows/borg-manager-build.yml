@@ -14,6 +14,8 @@ jobs:
       APP_SECRET: "ci-only-secret-do-not-use-in-production"
       PORT: "8081"
       TZ: "Europe/Berlin"
+      BORG_REPO_ROOT: ${{ github.workspace }}/repositories
+      HOST_ROOT: ${{ github.workspace }}/demo-sources
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +42,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
+          import os
           import time
           import urllib.error
           import urllib.request
@@ -65,10 +68,15 @@ jobs:
           assert health["ok"] is True
           assert health["mock_borg"] is True
           assert health["scheduler_running"] is True
+          assert health["borg_repo_host_root"] == os.environ["BORG_REPO_ROOT"]
+          assert health["host_source_root"] == os.environ["HOST_ROOT"]
+
+          host_repo = os.path.join(os.environ["BORG_REPO_ROOT"], "ci-repository")
+          host_source = os.environ["HOST_ROOT"]
 
           repo = request("POST", "/repositories", {
               "name": "ci-repository",
-              "location": "/repos/ci-repository",
+              "location": host_repo,
               "passphrase": "ci-passphrase",
               "initialize": True,
               "encryption": "repokey-blake2",
@@ -77,12 +85,13 @@ jobs:
 
           job = request("POST", "/backups", {
               "repository_id": repo_id,
-              "sources": ["/host"],
+              "sources": [host_source],
               "compression": "zstd,3",
               "excludes": [],
           })
 
           deadline = time.time() + 15
+          current = job
           while time.time() < deadline:
               current = request("GET", f"/jobs/{job['id']}")
               if current["status"] in {"success", "failed", "cancelled", "interrupted"}:
@@ -94,7 +103,7 @@ jobs:
               "name": "CI every 15 minutes",
               "repository_id": repo_id,
               "cron": "*/15 * * * *",
-              "sources": ["/host"],
+              "sources": [host_source],
               "compression": "zstd,3",
               "excludes": [],
               "enabled": True,
