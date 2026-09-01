@@ -114,7 +114,40 @@ jobs:
           assert len(metrics["repositories"]) == 1, metrics
           assert metrics["repositories"][0]["ok"] is True, metrics
 
-          print("Smoke test passed")
+          print("API smoke test passed")
+          PY
+
+      - name: Real Borg smoke test
+        run: |
+          docker compose exec -T backend borg --version
+          docker compose exec -T -e BORG_PASSPHRASE=ci-real-pass backend borg init --encryption=repokey-blake2 /repos/ci-real-borg
+          docker compose exec -T -e BORG_PASSPHRASE=ci-real-pass backend borg create --stats /repos/ci-real-borg::smoke /sources
+          docker compose exec -T -e BORG_PASSPHRASE=ci-real-pass backend borg list /repos/ci-real-borg | grep smoke
+
+      - name: Verify database persistence after backend restart
+        run: |
+          docker compose restart backend
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8081/api/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          python3 - <<'PY'
+          import json
+          import urllib.request
+
+          def get(path):
+              with urllib.request.urlopen("http://127.0.0.1:8081/api" + path, timeout=10) as r:
+                  return json.loads(r.read().decode())
+
+          repos = get("/repositories")
+          schedules = get("/schedules")
+          health = get("/health")
+          assert any(r["name"] == "ci-repository" for r in repos), repos
+          assert any(s["name"] == "CI every 15 minutes" for s in schedules), schedules
+          assert health["scheduler_running"] is True, health
+          print("Persistence/restart smoke test passed")
           PY
 
       - name: Show container status
