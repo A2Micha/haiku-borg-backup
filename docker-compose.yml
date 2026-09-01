@@ -7,12 +7,15 @@ services:
       APP_SECRET: ${APP_SECRET:-please-change-this-secret}
       RESTORE_ROOT: /restore
       MOCK_BORG: ${MOCK_BORG:-0}
+      TZ: ${TZ:-Europe/Berlin}
     volumes:
       - borg_manager_data:/data
       - ./repositories:/repos
       - ./demo-sources:/sources:ro
+      - ${HOST_ROOT:-./demo-sources}:/host:ro
       - ./restore-output:/restore
       - ${HOME}/.ssh:/root/.ssh:ro
+      - /etc/localtime:/etc/localtime:ro
 
   frontend:
     build: ./frontend
