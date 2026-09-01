@@ -8,11 +8,15 @@ services:
       RESTORE_ROOT: /restore
       MOCK_BORG: ${MOCK_BORG:-0}
       TZ: ${TZ:-Europe/Berlin}
+      BORG_REPO_HOST_ROOT: ${BORG_REPO_ROOT:-./repositories}
     volumes:
       - borg_manager_data:/data
-      - ./repositories:/repos
-      - ./demo-sources:/sources:ro
+      # Writable Borg repository storage on the Docker host.
+      # Example: BORG_REPO_ROOT=/mnt/backup/borg -> container /repos
+      - ${BORG_REPO_ROOT:-./repositories}:/repos
+      # Backup source data is intentionally read-only.
       - ${HOST_ROOT:-./demo-sources}:/host:ro
+      - ./demo-sources:/sources:ro
       - ./restore-output:/restore
       - ${HOME}/.ssh:/root/.ssh:ro
       - /etc/localtime:/etc/localtime:ro
