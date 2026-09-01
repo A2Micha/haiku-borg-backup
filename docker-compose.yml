@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite:////data/borg-manager.db
+      APP_SECRET: ${APP_SECRET:-please-change-this-secret}
+      RESTORE_ROOT: /restore
+      MOCK_BORG: ${MOCK_BORG:-0}
+    volumes:
+      - borg_manager_data:/data
+      - ./repositories:/repos
+      - ./demo-sources:/sources:ro
+      - ./restore-output:/restore
+      - ${HOME}/.ssh:/root/.ssh:ro
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${PORT:-8081}:80"
+
+volumes:
+  borg_manager_data:

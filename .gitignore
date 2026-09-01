@@ -1,0 +1,10 @@
+.env
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+*.db
+restore-output/*
+repositories/*
+!restore-output/.gitkeep
+!repositories/.gitkeep
