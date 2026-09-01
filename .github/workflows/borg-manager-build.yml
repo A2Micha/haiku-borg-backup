@@ -1,0 +1,15 @@
+name: Borg Manager Build
+
+on:
+  push:
+    branches: [borg-manager-mvp]
+  pull_request:
+    branches: [borg-manager-mvp]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker images
+        run: docker compose build
