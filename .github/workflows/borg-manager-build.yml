@@ -46,6 +46,7 @@ jobs:
           import time
           import urllib.error
           import urllib.request
+          from datetime import datetime
 
           BASE = "http://127.0.0.1:8081/api"
 
@@ -110,6 +111,30 @@ jobs:
           })
           assert schedule["next_run_at"], schedule
 
+          monday = request("POST", "/schedules", {
+              "name": "CI Monday",
+              "repository_id": repo_id,
+              "cron": "0 5 * * 1",
+              "sources": [host_source],
+              "compression": "zstd,3",
+              "excludes": [],
+              "enabled": True,
+          })
+          monday_next = datetime.fromisoformat(monday["next_run_at"])
+          assert monday_next.weekday() == 0, monday
+
+          weekend = request("POST", "/schedules", {
+              "name": "CI Weekend",
+              "repository_id": repo_id,
+              "cron": "0 5 * * 6,0",
+              "sources": [host_source],
+              "compression": "zstd,3",
+              "excludes": [],
+              "enabled": True,
+          })
+          weekend_next = datetime.fromisoformat(weekend["next_run_at"])
+          assert weekend_next.weekday() in {5, 6}, weekend
+
           metrics = request("GET", "/metrics")
           assert len(metrics["repositories"]) == 1, metrics
           assert metrics["repositories"][0]["ok"] is True, metrics
@@ -146,6 +171,7 @@ jobs:
           health = get("/health")
           assert any(r["name"] == "ci-repository" for r in repos), repos
           assert any(s["name"] == "CI every 15 minutes" for s in schedules), schedules
+          assert any(s["name"] == "CI Monday" for s in schedules), schedules
           assert health["scheduler_running"] is True, health
           print("Persistence/restart smoke test passed")
           PY
