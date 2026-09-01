@@ -17,6 +17,8 @@ services:
       METRICS_TTL: ${METRICS_TTL:-300}
       METRICS_CONCURRENCY: ${METRICS_CONCURRENCY:-2}
     volumes:
+      # Persistent Borg Manager database.
+      - borg_manager_data:/data
       # Writable Borg repository storage on the Docker host.
       - ${BORG_REPO_ROOT:-./repositories}:/repos
       # Backup source data is intentionally read-only.
