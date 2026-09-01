@@ -1,64 +1,148 @@
-# Borg Manager MVP
+# Borg Manager
 
-Independent BorgBackup web UI prototype inspired by the workflow of Borg UI, implemented from scratch.
+Independent BorgBackup web UI implemented from scratch, inspired by the workflow of Borg UI.
 
-## Included
+## Current capabilities
 
-- Dark responsive dashboard
-- Local or SSH Borg repository records
+- Dark responsive dashboard with Borg/scheduler health
+- Create a **real local or SSH Borg repository** with `borg init`
+- Attach an existing repository only after Borg can open it
 - Encrypted-at-rest repository passphrases (Fernet key derived from `APP_SECRET`)
-- Start Borg 1.x `create` jobs
-- Job status and persisted logs
-- Archive listing
-- Archive file browsing
+- Run real Borg 1.x `create` jobs
+- Validate source paths before queueing a backup
+- Persist job status and Borg output/logs
+- Cancel running jobs
+- List archives and browse archive files
 - Full or selective restores restricted to `/restore`
-- Schedule records/API (execution scheduler is intentionally not wired yet)
+- Persistent cron schedule definitions plus a live APScheduler executor
+- Run scheduled backups immediately from the UI
+- Repository integrity check with `borg check --repository-only`
 - Docker Compose deployment
-- Mock mode for UI/API testing without touching backups
+- Optional mock mode for UI testing
+
+## Important: real host data in Docker
+
+The backend sees the host source mount at `/host`. Configure which host directory is exposed in `.env`:
+
+```env
+MOCK_BORG=0
+TZ=Europe/Berlin
+HOST_ROOT=/
+```
+
+`HOST_ROOT=/` exposes the whole host filesystem **read-only** as `/host` inside the backend. For tighter access use a narrower value such as:
+
+```env
+HOST_ROOT=/home
+```
+
+Then `/host` inside Borg Manager represents `/home` on the Docker host.
+
+## Install / update
+
+```bash
+git clone --branch borg-manager-mvp --single-branch \
+  https://github.com/A2Micha/haiku-borg-backup.git borg-manager
+cd borg-manager
+cp .env.example .env
+nano .env
+docker compose up -d --build
+```
+
+Open `http://SERVER-IP:8081`.
+
+For an existing installation:
+
+```bash
+cd /etc/docker/containers/borg-manager
+git pull origin borg-manager-mvp
+```
+
+Make sure your existing `.env` contains at least:
+
+```env
+MOCK_BORG=0
+TZ=Europe/Berlin
+HOST_ROOT=/
+```
+
+Then rebuild because the backend gained scheduler dependencies:
+
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+docker compose ps
+```
+
+## Create a local repository
+
+In **Repositories** choose **Create new** and use a location such as:
+
+```text
+/repos/main
+```
+
+Select `repokey-blake2`, enter a passphrase and submit. Borg Manager executes a real `borg init`; the repository record is only saved if that succeeds.
+
+To attach an existing repository choose **Connect existing**. Borg Manager runs `borg info --json` first and rejects unreachable/invalid repositories.
+
+## Run a real backup
+
+With `HOST_ROOT=/`, examples of source paths in the UI are:
+
+```text
+/host/home
+/host/etc
+/host/var/lib
+```
+
+These map to `/home`, `/etc`, and `/var/lib` on the Docker host. Borg runs inside the backend container and writes the archive to the selected repository.
+
+## Scheduler
+
+Schedules use standard five-field cron syntax. Example:
+
+```text
+0 2 * * *
+```
+
+runs every day at 02:00 in the timezone configured with `TZ`. Schedules are loaded from SQLite whenever the backend starts and registered with APScheduler. The **Run now** button queues the same real Borg backup immediately.
+
+## Mock mode
+
+`MOCK_BORG=1` is intentionally fake and must only be used for UI testing. When active the UI displays a warning banner and Borg operations are simulated.
+
+For actual backups use:
+
+```env
+MOCK_BORG=0
+```
+
+## SSH repositories
+
+Use a Borg-compatible remote location such as:
+
+```text
+user@server:/path/to/repo
+```
+
+The current Docker Compose mounts `${HOME}/.ssh` read-only into the backend. For production use a dedicated backup SSH key and proper `known_hosts` management.
 
 ## Safety choices
 
-- Borg is launched with `create_subprocess_exec`; user input is never interpolated into a shell command.
-- Restore destinations are path-confined to `RESTORE_ROOT`.
+- Borg is executed with `create_subprocess_exec`; user input is not interpolated into a shell command.
+- Host backup data is mounted read-only.
+- Restore destinations are confined to `RESTORE_ROOT`.
 - Passphrases are not returned by the API and are encrypted before database storage.
-- Backup source access is constrained by Docker mounts. The sample compose exposes `./demo-sources` read-only as `/sources`.
+- Deleting a repository in the UI removes the Borg Manager record, not the actual Borg repository data.
 
-## Start
+## API highlights
 
-```bash
-cp .env.example .env
-# Change APP_SECRET before storing real credentials.
-docker compose up --build
-```
-
-Open http://localhost:8081
-
-### Quick safe demo
-
-Set `MOCK_BORG=1` in `.env`, then:
-
-1. Add repository `Demo` with location `/repos/demo`.
-2. Run a backup with source `/sources`.
-3. Open Archives and load the demo repository.
-
-Mock mode does not create or restore real Borg data.
-
-## Real Borg flow
-
-Set `MOCK_BORG=0`. Create/init a Borg 1.x repository first, for example on the host or in an equivalent Borg environment:
-
-```bash
-borg init --encryption=repokey-blake2 ./repositories/main
-```
-
-Then add `/repos/main` in the web UI and use `/sources` as a source.
-
-For SSH repositories, use a Borg-compatible location such as `user@server:/path/to/repo` and ensure the required SSH key/known_hosts entries are available. The sample compose mounts `${HOME}/.ssh` read-only for an MVP convenience; a production version should manage dedicated keys instead.
-
-## API surfaces
-
+- `GET /api/health`
 - `GET /api/dashboard`
 - `GET|POST|DELETE /api/repositories`
+- `POST /api/repositories/{id}/check`
 - `POST /api/backups`
 - `GET /api/jobs`
 - `POST /api/jobs/{id}/cancel`
@@ -66,10 +150,12 @@ For SSH repositories, use a Borg-compatible location such as `user@server:/path/
 - `GET /api/repositories/{id}/archives/{archive}/files`
 - `POST /api/restore`
 - `GET|POST /api/schedules`
+- `POST /api/schedules/{id}/run`
+- `DELETE /api/schedules/{id}`
 
-## Before production
+## Still not production-complete
 
-This is a functional MVP, not a hardened production backup appliance. The next production pass should add authentication/RBAC, CSRF/security headers, dedicated SSH-key management and host-key verification UI, durable process ownership/cancellation across restarts, repository init/check/prune/compact operations, an actual cron scheduler, retention policies, notifications, DB migrations, tests, pagination for huge archives, and Borg 2 compatibility.
+The project now performs real Borg operations and real scheduling, but it is not yet a hardened multi-user backup appliance. Remaining production work includes authentication/RBAC, dedicated SSH key/host-key management, durable recovery of running jobs after container restarts, retention/prune/compact policies, notifications, migrations, automated integration tests with real Borg repositories, pagination for huge archives, and Borg 2 compatibility.
 
 ## License note
 
